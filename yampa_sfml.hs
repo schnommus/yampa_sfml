@@ -73,11 +73,16 @@ main = do
             ctxSettings
     windowSize <- getWindowSize wnd
     putStrLn $ "Got window - size: " ++ (show $ windowSize)
+    clock <- createClock
 
     circle <- err $ createCircleShape
     setRadius circle 8
-    reactimate (initialize wnd) (input wnd) (output wnd) (process (initialObjects circle))
+    reactimate (initialize wnd)
+               (input wnd clock)
+               (output wnd)
+               (process (initialObjects circle))
     destroy circle
+    destroy clock
   where
     initialObjects ci =
         (listToIL [playerObj, obstacleObj])
@@ -104,26 +109,22 @@ initialize wnd = do
     putStrLn "Initialize..."
     allPendingEvents wnd
 
-input :: RenderWindow -> Bool -> IO (DTime, Maybe Input)
-input wnd _ = do
-    putStrLn "Input..."
+input :: RenderWindow -> Clock -> Bool -> IO (DTime, Maybe Input)
+input wnd clk _ = do
+    putStrLn "Input (sense)..."
     events <- allPendingEvents wnd
-    return (1.0, Just events)
+    delta <- fmap (float2Double.asSeconds) (getElapsedTime clk)
+    restartClock clk
+    return (delta, Just events)
 
 output :: RenderWindow -> Bool -> IL ObjOutput -> IO Bool
 output wnd _ oos = do
-    putStrLn $ "output (actuate) + " ++ (show delayMs) ++ "ms delay: "
-
+    putStrLn "Output (actuate)..."
     clearRenderWindow wnd green
-
     mapM_ (\oo -> render (ooState oo)) (elemsIL oos) -- render 'State'!
-
     display wnd
-
     return $ null $ keysIL oos
   where
-    delayMs = 0
-
     render :: State -> IO ()
     render (Circle pos circle color) = do
         setPosition circle (Vec2f (double2Float$point2X pos) (double2Float$point2Y pos))
@@ -202,15 +203,15 @@ playerObject p0 circle color = proc objEvents -> do
     -- ^+^ is Vector-Vector addition
     -- here we sum up all vectors based on the possibly multiple
     -- user inputs, thus allowing diagonal moves
-    p <- (p0 .+^) ^<< integral -<
-        foldl (^+^) (vector2 0 0) $ mapMaybe checkKey (oeInput objEvents)
+    let target_move = foldl (^+^) (vector2 0 0) $ mapMaybe checkKey (oeInput objEvents)
+    p <- (p0 .+^) ^<< integral -< 1000 *^ target_move
     returnA -< defaultObjOutput { ooState = Circle p circle color }
     where
         checkKey evt@(SFEvtKeyPressed _ _ _ _ _)
             | code evt == KeyUp    = Just $ vector2    0 (-32)
-            | code evt == KeyDown = Just $ vector2    0   32
-            | code evt == KeyRight  = Just $ vector2   32    0
-            | code evt == KeyLeft  = Just $ vector2   (-32)    0
+            | code evt == KeyDown  = Just $ vector2    0   32
+            | code evt == KeyRight = Just $ vector2   32    0
+            | code evt == KeyLeft  = Just $ vector2 (-32)   0
             | otherwise = Nothing
         checkKey _ = Nothing
 
