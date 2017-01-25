@@ -20,7 +20,7 @@ import SFML.System
 
 -- types --------
 
-type Position2 = Point2  Double
+type Position2 = Vector2 Double
 type Velocity2 = Vector2 Double
 
 type Input = [SFEvent]    -- non-deterministic events from input devices
@@ -87,8 +87,8 @@ main = do
     initialObjects ci =
         (listToIL [playerObj, obstacleObj])
       where
-        playerObj = playerObject (Point2 16 16) ci black
-        obstacleObj = staticObject (Point2 48 48) ci blue
+        playerObj = playerObject (vector2 16 16) ci black
+        obstacleObj = staticObject (vector2 48 48) ci blue
 
 -- reactimation IO ----------
 
@@ -117,6 +117,10 @@ input wnd clk _ = do
     restartClock clk
     return (delta, Just events)
 
+yampaToSfVector :: Vector2 Double -> Vec2f
+yampaToSfVector v = Vec2f (f$vector2X v) (f$vector2Y v)
+    where f = double2Float
+
 output :: RenderWindow -> Bool -> IL ObjOutput -> IO Bool
 output wnd _ oos = do
     putStrLn "Output (actuate)..."
@@ -127,7 +131,7 @@ output wnd _ oos = do
   where
     render :: State -> IO ()
     render (Circle pos circle color) = do
-        setPosition circle (Vec2f (double2Float$point2X pos) (double2Float$point2Y pos))
+        setPosition circle (yampaToSfVector pos)
         setFillColor circle color
         draw wnd circle Nothing
         return ()
@@ -197,23 +201,28 @@ killAndSpawn ((input, _), oos) =
 
 -- objects ----------
 
+keyToVector :: SFEvent -> Maybe Velocity2
+keyToVector evt@(SFEvtKeyPressed _ _ _ _ _)
+    | code evt == KeyUp    = Just $ vector2    0 (-32)
+    | code evt == KeyDown  = Just $ vector2    0   32
+    | code evt == KeyRight = Just $ vector2   32    0
+    | code evt == KeyLeft  = Just $ vector2 (-32)   0
+    | otherwise = Nothing
+keyToVector _ = Nothing
+
+-- here we sum up all vectors based on the possibly multiple
+-- user inputs, thus allowing diagonal moves
+-- ^+^ is Vector-Vector addition
+keysToVector :: [SFEvent] -> Velocity2
+keysToVector evts = foldl (^+^) (vector2 0 0) $ mapMaybe keyToVector evts
+
 playerObject :: Position2 -> CircleShape -> Color -> Object
 playerObject p0 circle color = proc objEvents -> do
-    -- .+^ is Point-Vector-addition
-    -- ^+^ is Vector-Vector addition
-    -- here we sum up all vectors based on the possibly multiple
-    -- user inputs, thus allowing diagonal moves
-    let target_move = foldl (^+^) (vector2 0 0) $ mapMaybe checkKey (oeInput objEvents)
-    p <- (p0 .+^) ^<< integral -< 1000 *^ target_move
+    rec
+        -- Add movement vector to current position, and make that the new
+        -- current position - given we start at p0
+        p <- iPre p0 -< (keysToVector (oeInput objEvents) ^+^ p)
     returnA -< defaultObjOutput { ooState = Circle p circle color }
-    where
-        checkKey evt@(SFEvtKeyPressed _ _ _ _ _)
-            | code evt == KeyUp    = Just $ vector2    0 (-32)
-            | code evt == KeyDown  = Just $ vector2    0   32
-            | code evt == KeyRight = Just $ vector2   32    0
-            | code evt == KeyLeft  = Just $ vector2 (-32)   0
-            | otherwise = Nothing
-        checkKey _ = Nothing
 
 staticObject :: Position2 -> CircleShape -> Color -> Object
 staticObject p0 circle color = proc objEvents -> do
