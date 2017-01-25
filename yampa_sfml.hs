@@ -221,7 +221,8 @@ playerObject p0 circle color = proc objEvents -> do
     rec
         -- Add movement vector to current position, and make that the new
         -- current position - given we start at p0
-        p <- iPre p0 -< (keysToVector (oeInput objEvents) ^+^ p)
+        target <- iPre p0 -< (keysToVector (oeInput objEvents) ^+^ target)
+        p <- (p0 ^+^) ^<< integral -< (10.0 *^ (target ^-^ p))
     returnA -< defaultObjOutput { ooState = Circle p circle color }
 
 staticObject :: Position2 -> CircleShape -> Color -> Object
