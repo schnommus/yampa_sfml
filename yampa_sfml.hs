@@ -23,6 +23,7 @@ import SFML.System
 
 type Position2 = Vector2 Double
 type Velocity2 = Vector2 Double
+type Rotation = Float
 
 type Input = [SFEvent]    -- non-deterministic events from input devices
 type Logic = Yampa.Event () -- deterministic events from object processor
@@ -32,11 +33,11 @@ data ObjEvents = ObjEvents
     , oeLogic :: Logic
     } deriving (Show)
 
-data State = Circle Position2 CircleShape Color | Debug String
+data State = Entity Position2 Sprite Rotation Color | Debug String
 
 instance Show State where
-    show (Circle pos shape color)
-      = "Circle " ++ (show pos) ++ " " ++ (show color)
+    show (Entity pos sprite rotation color)
+      = "Entity" ++ (show pos) ++ " " ++ (show rotation) ++ " " ++ (show color)
     show (Debug str)
       = str
 
@@ -63,6 +64,27 @@ instance Show (SF a b) where
 
 -- main ---------
 
+centerSprite :: Sprite -> IO ()
+centerSprite sprite = do
+    bounds <- getLocalBounds sprite
+    setOrigin sprite (Vec2f ((/2).fwidth$bounds) ((/2).fheight$bounds))
+
+loadPixelSprite :: String -> IntRect -> IO Sprite
+loadPixelSprite string rect = do
+    sprite <- err $ createSprite
+    tex <- err $ textureFromFile string Nothing
+    setTexture sprite tex True
+    setTextureRect sprite rect
+    setScale sprite 3
+    centerSprite sprite
+    return sprite
+
+playerObj :: IO Object
+playerObj = do
+    sprite1 <- loadPixelSprite "pixelship.png" (IntRect 0 0 32 32)
+    sprite2 <- loadPixelSprite "pixelshipfire.png" (IntRect 0 0 32 32)
+    return $ playerObject (vector2 16 16) sprite1 sprite2 white
+
 main :: IO ()
 main = do
     let ctxSettings = Just $ ContextSettings 24 8 0 1 2 [ContextDefault]
@@ -76,20 +98,18 @@ main = do
     putStrLn $ "Got window - size: " ++ (show $ windowSize)
     clock <- createClock
 
-    circle <- err $ createCircleShape
-    setRadius circle 8
+    player <- playerObj
+
     reactimate (initialize wnd)
                (input wnd clock)
                (output wnd)
-               (process (initialObjects circle))
-    destroy circle
+               (process (initialObjects player))
     destroy clock
   where
-    initialObjects ci =
-        (listToIL [playerObj, obstacleObj])
+    initialObjects player =
+        (listToIL [player])
       where
-        playerObj = playerObject (vector2 16 16) ci black
-        obstacleObj = staticObject (vector2 48 48) ci blue
+        --obstacleObj = staticObject (vector2 48 48) ci blue
 
 -- reactimation IO ----------
 
@@ -126,16 +146,17 @@ yampaToSfVector v = Vec2f (f$vector2X v) (f$vector2Y v)
 output :: RenderWindow -> Bool -> IL ObjOutput -> IO Bool
 output wnd _ oos = do
     putStrLn "Output (actuate)..."
-    clearRenderWindow wnd green
+    clearRenderWindow wnd black
     mapM_ (\oo -> render (ooState oo)) (elemsIL oos) -- render 'State'!
     display wnd
     return $ null $ keysIL oos
   where
     render :: State -> IO ()
-    render (Circle pos circle color) = do
-        setPosition circle (yampaToSfVector pos)
-        setFillColor circle color
-        draw wnd circle Nothing
+    render (Entity pos sprite rotation color) = do
+        setPosition sprite (yampaToSfVector pos)
+        setRotation sprite rotation
+        setColor sprite color
+        draw wnd sprite Nothing
         return ()
     render (Debug s) = putStrLn s
 
@@ -179,7 +200,7 @@ hits kooss = concat (hitsAux kooss)
         ++ hitsAux kooss
 
     hit :: State -> State -> Bool
-    (Circle p1 _ _) `hit` (Circle p2 _ _) = p1 == p2
+    (Entity p1 _ _ _) `hit` (Entity p2 _ _ _) = p1 == p2
     _ `hit` _ = False
 
 killAndSpawn :: ((Input, IL ObjOutput), IL ObjOutput)
@@ -222,51 +243,48 @@ trackKey key = proc input -> do
                 Just newState -> newState
     returnA -< keyState
 
-keyToVector :: SFEvent -> Maybe Velocity2
-keyToVector evt@(SFEvtKeyPressed _ _ _ _ _)
-    | code evt == KeyUp    = Just $ vector2    0 (-32)
-    | code evt == KeyDown  = Just $ vector2    0   32
-    | code evt == KeyRight = Just $ vector2   32    0
-    | code evt == KeyLeft  = Just $ vector2 (-32)   0
-    | otherwise = Nothing
-keyToVector _ = Nothing
-
--- here we sum up all vectors based on the possibly multiple
--- user inputs, thus allowing diagonal moves
--- ^+^ is Vector-Vector addition
-keysToVector :: [SFEvent] -> Velocity2
-keysToVector evts = foldl (^+^) (vector2 0 0) $ mapMaybe keyToVector evts
-
+-- Create a signal function that returns a value depending on a boolean input
 applyValue :: a -> a -> SF Bool a
 applyValue true_value false_value =
     arr $ \input -> case input of
       True -> true_value
       False -> false_value
 
+radToDeg :: Float -> Float
+radToDeg f = 180*(f/3.14159)
 
-playerObject :: Position2 -> CircleShape -> Color -> Object
-playerObject p0 circle color = proc objEvents -> do
-        -- Add movement vector to current position, and make that the new
-        -- current position - given we start at p0
-    --rec
-        --target <- iPre p0 -< (keysToVector (oeInput objEvents) ^+^ target)
-        --p <- (p0 ^+^) ^<< integral -< (10.0 *^ (target ^-^ p))
-    left  <- apVec (-1) 0   <<< trackKey KeyLeft  -< (oeInput objEvents)
-    right <- apVec (1)  0   <<< trackKey KeyRight -< (oeInput objEvents)
-    up    <- apVec  0  (-1) <<< trackKey KeyUp    -< (oeInput objEvents)
-    down  <- apVec  0  (1)  <<< trackKey KeyDown  -< (oeInput objEvents)
-    acc <- identity -< (speed *^) $ foldl (^+^) zeroVector [left, right, up, down]
+radToVec :: Double -> Velocity2
+radToVec r = vector2 (cos r) (sin r)
+
+playerObject :: Position2 -> Sprite -> Sprite -> Color -> Object
+playerObject p0 sprite_still sprite_move color = proc objEvents -> do
+    left  <- applyValue (-1) 0 <<< trackKey KeyLeft  -< (oeInput objEvents)
+    right <- applyValue  1   0 <<< trackKey KeyRight -< (oeInput objEvents)
+    up    <- applyValue  1   0 <<< trackKey KeyUp    -< (oeInput objEvents)
+    sprite <- applyValue sprite_move sprite_still
+        <<< trackKey KeyUp -< (oeInput objEvents)
+
     rec
-        vel <- integral -< acc ^-^ (drag *^ vel) -- Recursive vel for drag
-    p <- (p0^+^) ^<< integral -< vel
-    returnA -< defaultObjOutput { ooState = Circle p circle color }
-        where apVec x y = applyValue (vector2 x y) zeroVector
-              speed = 500
-              drag = 2
+        rot_acc <- identity -< (rot_speed *) $ (left + right)
+        pos_acc <- identity -<  ((up * pos_speed) *^) (radToVec rot)
 
-staticObject :: Position2 -> CircleShape -> Color -> Object
-staticObject p0 circle color = proc objEvents -> do
-    returnA -< defaultObjOutput { ooState         = Circle p0 circle color
+        rot_vel <- integral -< rot_acc - (rot_drag * rot_vel)
+        pos_vel <- integral -< pos_acc ^-^ (pos_drag *^ pos_vel)
+
+        rot <- integral -< rot_vel
+        p <- (p0^+^) ^<< integral -< pos_vel
+
+    returnA -< defaultObjOutput {
+        ooState = Entity p sprite ((90+).radToDeg.double2Float$rot) color
+        }
+        where pos_speed = 500
+              pos_drag = 0.5
+              rot_speed = 50
+              rot_drag = 10
+
+staticObject :: Position2 -> Sprite -> Color -> Object
+staticObject p0 sprite color = proc objEvents -> do
+    returnA -< defaultObjOutput { ooState         = Entity p0 sprite 0 color
                                 , ooKillRequest   = (oeLogic objEvents)
                                 , ooSpawnRequests = (debugIfKilled objEvents)
                                 }
