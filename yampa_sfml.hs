@@ -7,6 +7,7 @@ module Main where
 import IdentityList
 
 import Data.Maybe
+import Data.List.Safe as ListSafe
 import Control.Monad.Loops
 
 import GHC.Float
@@ -114,6 +115,7 @@ input wnd clk _ = do
     putStrLn "Input (sense)..."
     events <- allPendingEvents wnd
     delta <- fmap (float2Double.asSeconds) (getElapsedTime clk)
+    putStrLn $ (show.round$(1/delta)) ++ " FPS"
     restartClock clk
     return (delta, Just events)
 
@@ -201,6 +203,25 @@ killAndSpawn ((input, _), oos) =
 
 -- objects ----------
 
+-- True if pressed, false if released, nothing otherwise
+scanKey :: KeyCode -> Input -> Maybe Bool
+scanKey key =
+    ListSafe.last . (mapMaybe $ \evt -> case evt of
+        (SFEvtKeyPressed k _ _ _ _) -> if k == key then Just True else Nothing
+        (SFEvtKeyReleased k _ _ _ _) -> if k == key then Just False else Nothing
+        _ -> Nothing)
+
+-- Create a signal function that tracks the state of keys based on input events.
+-- It emits 'true' whenever the specified keycode is pressed
+trackKey :: KeyCode -> SF Input Bool
+trackKey key = proc input -> do
+    rec
+        keyState <- iPre False -<
+            case scanKey key input of
+                Nothing -> keyState
+                Just newState -> newState
+    returnA -< keyState
+
 keyToVector :: SFEvent -> Maybe Velocity2
 keyToVector evt@(SFEvtKeyPressed _ _ _ _ _)
     | code evt == KeyUp    = Just $ vector2    0 (-32)
@@ -216,14 +237,32 @@ keyToVector _ = Nothing
 keysToVector :: [SFEvent] -> Velocity2
 keysToVector evts = foldl (^+^) (vector2 0 0) $ mapMaybe keyToVector evts
 
+applyValue :: a -> a -> SF Bool a
+applyValue true_value false_value =
+    arr $ \input -> case input of
+      True -> true_value
+      False -> false_value
+
+
 playerObject :: Position2 -> CircleShape -> Color -> Object
 playerObject p0 circle color = proc objEvents -> do
-    rec
         -- Add movement vector to current position, and make that the new
         -- current position - given we start at p0
-        target <- iPre p0 -< (keysToVector (oeInput objEvents) ^+^ target)
-        p <- (p0 ^+^) ^<< integral -< (10.0 *^ (target ^-^ p))
+    --rec
+        --target <- iPre p0 -< (keysToVector (oeInput objEvents) ^+^ target)
+        --p <- (p0 ^+^) ^<< integral -< (10.0 *^ (target ^-^ p))
+    left  <- apVec (-1) 0   <<< trackKey KeyLeft  -< (oeInput objEvents)
+    right <- apVec (1)  0   <<< trackKey KeyRight -< (oeInput objEvents)
+    up    <- apVec  0  (-1) <<< trackKey KeyUp    -< (oeInput objEvents)
+    down  <- apVec  0  (1)  <<< trackKey KeyDown  -< (oeInput objEvents)
+    acc <- identity -< (speed *^) $ foldl (^+^) zeroVector [left, right, up, down]
+    rec
+        vel <- integral -< acc ^-^ (drag *^ vel) -- Recursive vel for drag
+    p <- (p0^+^) ^<< integral -< vel
     returnA -< defaultObjOutput { ooState = Circle p circle color }
+        where apVec x y = applyValue (vector2 x y) zeroVector
+              speed = 500
+              drag = 2
 
 staticObject :: Position2 -> CircleShape -> Color -> Object
 staticObject p0 circle color = proc objEvents -> do
