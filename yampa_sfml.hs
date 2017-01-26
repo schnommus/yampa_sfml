@@ -89,8 +89,8 @@ playerObj = do
     bullet_spr <- loadPixelSprite "media/pixelbullet.png" (IntRect 0 0 3 3)
     return $ playerObject (vector2 16 16) sprite1 sprite2 white bullet_spr
 
-main :: IO ()
-main = do
+init_window :: IO RenderWindow
+init_window = do
     let ctxSettings = Just $ ContextSettings 24 8 0 1 2 [ContextDefault]
     wnd <-
         createRenderWindow
@@ -100,33 +100,27 @@ main = do
             ctxSettings
     windowSize <- getWindowSize wnd
     putStrLn $ "Got window - size: " ++ (show $ windowSize)
-    clock <- createClock
+    return wnd
 
+main :: IO ()
+main = do
+    wnd <- init_window
+
+    clock <- createClock
     player <- playerObj
 
     reactimate (initialize wnd)
                (input wnd clock)
                (output wnd)
-               (process (initialObjects player))
-    destroy clock
-  where
-    initialObjects player =
-        (listToIL [player])
-      where
-        --obstacleObj = staticObject (vector2 48 48) ci blue
+               (process (listToIL[player]))
+
 
 -- reactimation IO ----------
-
-squashEvents :: [Maybe SFEvent] -> Maybe [SFEvent]
-squashEvents = sequence
 
 allPendingEvents :: RenderWindow -> IO Input
 allPendingEvents wnd = do
     eventMaybe <- unfoldWhileM (/= Nothing) (pollEvent wnd)
-    let events = (fromMaybe []) $ squashEvents eventMaybe
-        in do
-            putStrLn $ "All pending events (sense): " ++ show events
-            return events
+    return $ (fromMaybe []) $ sequence eventMaybe
 
 
 initialize :: RenderWindow -> IO Input
@@ -136,7 +130,6 @@ initialize wnd = do
 
 input :: RenderWindow -> Clock -> Bool -> IO (DTime, Maybe Input)
 input wnd clk _ = do
-    putStrLn "Input (sense)..."
     events <- allPendingEvents wnd
     delta <- fmap (float2Double.asSeconds) (getElapsedTime clk)
     putStrLn $ (show.round$(1/delta)) ++ " FPS"
@@ -149,7 +142,6 @@ yampaToSfVector v = Vec2f (f$vector2X v) (f$vector2Y v)
 
 output :: RenderWindow -> Bool -> IL ObjOutput -> IO Bool
 output wnd _ oos = do
-    putStrLn "Output (actuate)..."
     clearRenderWindow wnd black
     mapM_ (\oo -> render (ooState oo)) (elemsIL oos) -- render 'State'!
     display wnd
