@@ -33,13 +33,16 @@ data ObjEvents = ObjEvents
     , oeLogic :: Logic
     } deriving (Show)
 
-data State = Entity Position2 Sprite Rotation Color | Debug String
+data State = Entity
+    { entPosition :: Position2
+    , entSprite   :: Sprite
+    , entRotation :: Rotation
+    , entColor    :: Color
+    }
 
 instance Show State where
     show (Entity pos sprite rotation color)
       = "Entity" ++ (show pos) ++ " " ++ (show rotation) ++ " " ++ (show color)
-    show (Debug str)
-      = str
 
 data ObjOutput = ObjOutput
     { ooState         :: State
@@ -81,9 +84,10 @@ loadPixelSprite string rect = do
 
 playerObj :: IO Object
 playerObj = do
-    sprite1 <- loadPixelSprite "pixelship.png" (IntRect 0 0 32 32)
-    sprite2 <- loadPixelSprite "pixelshipfire.png" (IntRect 0 0 32 32)
-    return $ playerObject (vector2 16 16) sprite1 sprite2 white
+    sprite1 <- loadPixelSprite "media/pixelship.png" (IntRect 0 0 32 32)
+    sprite2 <- loadPixelSprite "media/pixelshipfire.png" (IntRect 0 0 32 32)
+    bullet_spr <- loadPixelSprite "media/pixelbullet.png" (IntRect 0 0 3 3)
+    return $ playerObject (vector2 16 16) sprite1 sprite2 white bullet_spr
 
 main :: IO ()
 main = do
@@ -158,8 +162,6 @@ output wnd _ oos = do
         setColor sprite color
         draw wnd sprite Nothing
         return ()
-    render (Debug s) = putStrLn s
-
 
 -- reactimate process ----------
 
@@ -201,7 +203,6 @@ hits kooss = concat (hitsAux kooss)
 
     hit :: State -> State -> Bool
     (Entity p1 _ _ _) `hit` (Entity p2 _ _ _) = p1 == p2
-    _ `hit` _ = False
 
 killAndSpawn :: ((Input, IL ObjOutput), IL ObjOutput)
              -> Yampa.Event (IL Object -> IL Object)
@@ -256,8 +257,8 @@ radToDeg f = 180*(f/3.14159)
 radToVec :: Double -> Velocity2
 radToVec r = vector2 (cos r) (sin r)
 
-playerObject :: Position2 -> Sprite -> Sprite -> Color -> Object
-playerObject p0 sprite_still sprite_move color = proc objEvents -> do
+playerObject :: Position2 -> Sprite -> Sprite -> Color -> Sprite ->  Object
+playerObject p0 sprite_still sprite_move color bullet_spr = proc objEvents -> do
     left  <- applyValue (-1) 0 <<< trackKey KeyLeft  -< (oeInput objEvents)
     right <- applyValue  1   0 <<< trackKey KeyRight -< (oeInput objEvents)
     up    <- applyValue  1   0 <<< trackKey KeyUp    -< (oeInput objEvents)
@@ -274,28 +275,24 @@ playerObject p0 sprite_still sprite_move color = proc objEvents -> do
         rot <- integral -< rot_vel
         p <- (p0^+^) ^<< integral -< pos_vel
 
+    createBulletEvent <- edge <<< trackKey KeySpace -< (oeInput objEvents)
+
     returnA -< defaultObjOutput {
-        ooState = Entity p sprite ((90+).radToDeg.double2Float$rot) color
+        ooState = Entity p sprite ((90+).radToDeg.double2Float$rot) color,
+        ooSpawnRequests = createBulletEvent `tag` [
+            bulletObject bullet_spr p (bullet_v pos_vel rot)
+            ]
         }
         where pos_speed = 500
               pos_drag = 0.5
               rot_speed = 50
               rot_drag = 10
+              bullet_v :: Velocity2 -> Double -> Velocity2
+              bullet_v v r = v ^+^ (1000*^(radToVec r))
 
-staticObject :: Position2 -> Sprite -> Color -> Object
-staticObject p0 sprite color = proc objEvents -> do
-    returnA -< defaultObjOutput { ooState         = Entity p0 sprite 0 color
-                                , ooKillRequest   = (oeLogic objEvents)
-                                , ooSpawnRequests = (debugIfKilled objEvents)
-                                }
-  where
-    debugIfKilled objEvents =
-        case (oeLogic objEvents) of
-            Yampa.Event () -> Event [debugObject "hit"]
-            _              -> Event []
-
-debugObject :: String -> Object
-debugObject s = proc objEvents -> do
-    returnA -< defaultObjOutput { ooState       = Debug s
-                                , ooKillRequest = Event ()
+bulletObject :: Sprite -> Position2 -> Velocity2 -> Object
+bulletObject sprite pos vel = proc objEvents -> do
+    pos_vel <- constant vel -< ()
+    pos_out <- (pos^+^) ^<< integral -< pos_vel
+    returnA -< defaultObjOutput { ooState = Entity pos_out sprite 0 white
                                 }
