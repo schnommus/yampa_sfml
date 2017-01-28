@@ -9,11 +9,13 @@ import IdentityList
 import Data.Maybe
 import Data.List.Safe as ListSafe
 import Control.Monad.Loops
+import System.Random
 
 import GHC.Float
 
 import FRP.Yampa              as Yampa
 import FRP.Yampa.Geometry
+import FRP.Yampa.Random
 
 import SFML.Graphics
 import SFML.Window
@@ -89,7 +91,9 @@ playerObj = do
     sprite1 <- loadPixelSprite "media/pixelship.png" (IntRect 0 0 32 32)
     sprite2 <- loadPixelSprite "media/pixelshipfire.png" (IntRect 0 0 32 32)
     bullet_spr <- loadPixelSprite "media/pixelbullet.png" (IntRect 0 0 3 3)
-    return $ playerObject (vector2 16 16) sprite1 sprite2 white bullet_spr
+    smoke_spr <- loadPixelSprite "media/pixelstar.png" (IntRect 0 0 1 1)
+    let gen = mkStdGen 0
+    return $ playerObject (vector2 16 16) sprite1 sprite2 white bullet_spr smoke_spr gen
 
 fpsObj :: IO Object
 fpsObj = do
@@ -265,13 +269,20 @@ radToDeg f = 180*(f/3.14159)
 radToVec :: Double -> Velocity2
 radToVec r = vector2 (cos r) (sin r)
 
-playerObject :: Position2 -> Sprite -> Sprite -> Color -> Sprite ->  Object
-playerObject p0 sprite_still sprite_move color bullet_spr = proc objEvents -> do
+playerObject :: RandomGen r =>
+    Position2 -> Sprite -> Sprite -> Color -> Sprite -> Sprite -> r -> Object
+playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc objEvents -> do
     left  <- applyValue (-1) 0 <<< trackKey KeyLeft  -< (oeInput objEvents)
     right <- applyValue  1   0 <<< trackKey KeyRight -< (oeInput objEvents)
     up    <- applyValue  1   0 <<< trackKey KeyUp    -< (oeInput objEvents)
-    sprite <- applyValue sprite_move sprite_still
-        <<< trackKey KeyUp -< (oeInput objEvents)
+
+    engines_on <- trackKey KeyUp -< (oeInput objEvents)
+
+    sprite <- applyValue sprite_move sprite_still -< engines_on
+
+    smokeSource <- occasionally gen (1/smoke_particles) () -< ()
+    let createSmokeEvent = gate smokeSource engines_on
+
 
     rec
         rot_acc <- identity -< (rot_speed *) $ (left + right)
@@ -285,25 +296,32 @@ playerObject p0 sprite_still sprite_move color bullet_spr = proc objEvents -> do
 
     createBulletEvent <- edge <<< trackKey KeySpace -< (oeInput objEvents)
 
+    smokeOffset <- noiseR ((-0.5), 0.5) gen -< ()
+    let smokePosition = p ^+^ (50 *^ (radToVec (rot+pi+smokeOffset)))
+
     returnA -< defaultObjOutput {
         ooState = Entity
                     p
                     (RenderableSprite sprite)
                     ((90+).radToDeg.double2Float$rot)
                     color,
-        ooSpawnRequests = createBulletEvent `tag` [
-            bulletObject bullet_spr p (bullet_v pos_vel rot)
-            ]
+        ooSpawnRequests = catEvents $ [
+            createBulletEvent `tag`
+                particleObject bullet_spr p (proj_v pos_vel rot 1000),
+            createSmokeEvent `tag`
+                particleObject smoke_spr smokePosition (negateVector (proj_v pos_vel rot 100))
+                                      ]
         }
         where pos_speed = 500
               pos_drag = 0.5
               rot_speed = 50
               rot_drag = 10
-              bullet_v :: Velocity2 -> Double -> Velocity2
-              bullet_v v r = v ^+^ (1000*^(radToVec r))
+              smoke_particles = 40
+              proj_v :: Velocity2 -> Double -> Double -> Velocity2
+              proj_v vel rot factor = vel ^+^ (factor*^(radToVec rot))
 
-bulletObject :: Sprite -> Position2 -> Velocity2 -> Object
-bulletObject sprite pos vel = proc objEvents -> do
+particleObject :: Sprite -> Position2 -> Velocity2 -> Object
+particleObject sprite pos vel = proc objEvents -> do
     pos_vel <- constant vel -< ()
     pos_out <- (pos^+^) ^<< integral -< pos_vel
     returnA -< defaultObjOutput { ooState = Entity pos_out (RenderableSprite sprite) 0 white
