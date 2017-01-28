@@ -33,15 +33,17 @@ data ObjEvents = ObjEvents
     , oeLogic :: Logic
     } deriving (Show)
 
+data Renderable = RenderableSprite Sprite | RenderableText Text String
+
 data State = Entity
     { entPosition :: Position2
-    , entSprite   :: Sprite
+    , entRenderable  :: Renderable
     , entRotation :: Rotation
     , entColor    :: Color
     }
 
 instance Show State where
-    show (Entity pos sprite rotation color)
+    show (Entity pos _ rotation color)
       = "Entity" ++ (show pos) ++ " " ++ (show rotation) ++ " " ++ (show color)
 
 data ObjOutput = ObjOutput
@@ -89,6 +91,14 @@ playerObj = do
     bullet_spr <- loadPixelSprite "media/pixelbullet.png" (IntRect 0 0 3 3)
     return $ playerObject (vector2 16 16) sprite1 sprite2 white bullet_spr
 
+fpsObj :: IO Object
+fpsObj = do
+    text <- err $ createText
+    font <- err $ fontFromFile "media/pixelfont.ttf"
+    setTextFont text font
+    setTextString text "???"
+    return $ fpsObject (vector2 16 16) text white
+
 init_window :: IO RenderWindow
 init_window = do
     let ctxSettings = Just $ ContextSettings 24 8 0 1 2 [ContextDefault]
@@ -108,11 +118,12 @@ main = do
 
     clock <- createClock
     player <- playerObj
+    fps <- fpsObj
 
     reactimate (initialize wnd)
                (input wnd clock)
                (output wnd)
-               (process (listToIL[player]))
+               (process (listToIL[player, fps]))
 
 
 -- reactimation IO ----------
@@ -131,9 +142,7 @@ initialize wnd = do
 input :: RenderWindow -> Clock -> Bool -> IO (DTime, Maybe Input)
 input wnd clk _ = do
     events <- allPendingEvents wnd
-    delta <- fmap (float2Double.asSeconds) (getElapsedTime clk)
-    putStrLn $ (show.round$(1/delta)) ++ " FPS"
-    restartClock clk
+    delta <- fmap (float2Double.asSeconds) (restartClock clk)
     return (delta, Just events)
 
 yampaToSfVector :: Vector2 Double -> Vec2f
@@ -148,11 +157,18 @@ output wnd _ oos = do
     return $ null $ keysIL oos
   where
     render :: State -> IO ()
-    render (Entity pos sprite rotation color) = do
+    render (Entity pos (RenderableSprite sprite) rotation color) = do
         setPosition sprite (yampaToSfVector pos)
         setRotation sprite rotation
         setColor sprite color
         draw wnd sprite Nothing
+        return ()
+    render (Entity pos (RenderableText text string) rotation color) = do
+        setPosition text (yampaToSfVector pos)
+        setRotation text rotation
+        setTextString text string
+        setTextColor text color
+        draw wnd text Nothing
         return ()
 
 -- reactimate process ----------
@@ -270,7 +286,11 @@ playerObject p0 sprite_still sprite_move color bullet_spr = proc objEvents -> do
     createBulletEvent <- edge <<< trackKey KeySpace -< (oeInput objEvents)
 
     returnA -< defaultObjOutput {
-        ooState = Entity p sprite ((90+).radToDeg.double2Float$rot) color,
+        ooState = Entity
+                    p
+                    (RenderableSprite sprite)
+                    ((90+).radToDeg.double2Float$rot)
+                    color,
         ooSpawnRequests = createBulletEvent `tag` [
             bulletObject bullet_spr p (bullet_v pos_vel rot)
             ]
@@ -286,5 +306,15 @@ bulletObject :: Sprite -> Position2 -> Velocity2 -> Object
 bulletObject sprite pos vel = proc objEvents -> do
     pos_vel <- constant vel -< ()
     pos_out <- (pos^+^) ^<< integral -< pos_vel
-    returnA -< defaultObjOutput { ooState = Entity pos_out sprite 0 white
+    returnA -< defaultObjOutput { ooState = Entity pos_out (RenderableSprite sprite) 0 white
+                                }
+
+fpsObject :: Vector2 Double -> Text -> Color -> Object
+fpsObject pos text color = proc objEvents -> do
+    rec
+        elapsed <- localTime -< ()
+        oldElapsed <- iPre 0.1 -< elapsed
+        fps <- arr ((++" FPS").show.round.(1.0/)) -< elapsed - oldElapsed
+    returnA -< defaultObjOutput {
+        ooState = Entity pos (RenderableText text fps) 0 color
                                 }
