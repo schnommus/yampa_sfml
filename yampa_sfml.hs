@@ -316,7 +316,7 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
               pos_drag = 0.5
               rot_speed = 50
               rot_drag = 10
-              smoke_particles = 40
+              smoke_particles = 160
               proj_v :: Velocity2 -> Double -> Double -> Velocity2
               proj_v vel rot factor = vel ^+^ (factor*^(radToVec rot))
 
@@ -324,7 +324,16 @@ particleObject :: Sprite -> Position2 -> Velocity2 -> Object
 particleObject sprite pos vel = proc objEvents -> do
     pos_vel <- constant vel -< ()
     pos_out <- (pos^+^) ^<< integral -< pos_vel
-    returnA -< defaultObjOutput { ooState = Entity pos_out (RenderableSprite sprite) 0 white
+    decay <- (+1.0) ^<< integral -< (-1.0)
+
+    decayed_event <- edge <<^ (< 0.1) -< decay
+
+    let fade :: Double -> Color
+        fade a = Color 255 255 255 ((round.(*255)) a)
+
+    returnA -< defaultObjOutput {
+        ooState = Entity pos_out (RenderableSprite sprite) 0 (fade decay),
+        ooKillRequest = decayed_event
                                 }
 
 fpsObject :: Vector2 Double -> Text -> Color -> Object
