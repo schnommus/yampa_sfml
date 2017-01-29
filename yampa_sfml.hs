@@ -296,8 +296,9 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
 
     createBulletEvent <- edge <<< trackKey KeySpace -< (oeInput objEvents)
 
-    smokeOffset <- noiseR ((-0.5), 0.5) gen -< ()
-    let smokePosition = p ^+^ (50 *^ (radToVec (rot+pi+smokeOffset)))
+    smokeEngine <- ((*0.5).(`subtract`1).fromIntegral.round) ^<< noiseR (0 :: Float, 2) gen -< ()
+    smokeOffset <- noiseR ((-0.1), 0.1) gen -< ()
+    let smokePosition = p ^+^ (50 *^ (radToVec (rot+pi+smokeOffset+smokeEngine)))
 
     returnA -< defaultObjOutput {
         ooState = Entity
@@ -329,7 +330,7 @@ particleObject sprite pos vel = proc objEvents -> do
     decayed_event <- edge <<^ (< 0.1) -< decay
 
     let fade :: Double -> Color
-        fade a = Color 255 255 255 ((round.(*255)) a)
+        fade a = Color 255 255 30 ((round.(*255)) a)
 
     returnA -< defaultObjOutput {
         ooState = Entity pos_out (RenderableSprite sprite) 0 (fade decay),
