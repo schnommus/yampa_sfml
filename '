@@ -82,7 +82,7 @@ loadPixelSprite string rect = do
     tex <- err $ textureFromFile string Nothing
     setTexture sprite tex True
     setTextureRect sprite rect
-    setScale sprite 1
+    setScale sprite 3
     centerSprite sprite
     return sprite
 
@@ -101,10 +101,9 @@ fpsObj = do
     font <- err $ fontFromFile "media/pixelfont.ttf"
     setTextFont text font
     setTextString text "???"
-    setTextCharacterSize text 8
-    return $ fpsObject (vector2 4 4) text white
+    return $ fpsObject (vector2 16 16) text white
 
-init_window :: IO (RenderWindow, RenderTexture, Sprite)
+init_window :: IO (RenderWindow, RenderTexture)
 init_window = do
     let ctxSettings = Just $ ContextSettings 24 8 0 1 2 [ContextDefault]
     wnd <-
@@ -116,21 +115,17 @@ init_window = do
     windowSize <- getWindowSize wnd
     putStrLn $ "Got window - size: " ++ (show $ windowSize)
 
-    let vx, vy :: Vec2u -> Int
-        vx (Vec2u x _) = fromIntegral x `div` 3
-        vy (Vec2u _ y) = fromIntegral y `div` 3
+    let vx (Vec2u x _) = fromIntegral $ x/3
+    let vy (Vec2u _ y) = fromIntegral $ x/3
 
     renderTarget <- err $
         createRenderTexture (vx windowSize) (vy windowSize) False
 
-    spriteTarget <- err $ createSprite
-    setScale spriteTarget 3
-
-    return (wnd, renderTarget, spriteTarget)
+    return (wnd, renderTarget)
 
 main :: IO ()
 main = do
-    (wnd, target, target_sprite) <- init_window
+    (wnd, target) <- init_window
 
     clock <- createClock
     player <- playerObj
@@ -138,7 +133,7 @@ main = do
 
     reactimate (initialize wnd)
                (input wnd clock)
-               (output wnd target target_sprite)
+               (output wnd)
                (process (listToIL[player, fps]))
 
 
@@ -161,38 +156,30 @@ input wnd clk _ = do
     delta <- fmap (float2Double.asSeconds) (restartClock clk)
     return (delta, Just events)
 
-yampaToSfVectorRounded :: Vector2 Double -> Vec2f
-yampaToSfVectorRounded v = Vec2f (f$vector2X v) (f$vector2Y v)
-    where f = fromIntegral.round
+yampaToSfVector :: Vector2 Double -> Vec2f
+yampaToSfVector v = Vec2f (f$vector2X v) (f$vector2Y v)
+    where f = double2Float
 
-output :: RenderWindow -> RenderTexture -> Sprite -> Bool -> IL ObjOutput -> IO Bool
-output wnd target target_sprite _ oos = do
-    clear target black
+output :: RenderWindow -> Bool -> IL ObjOutput -> IO Bool
+output wnd _ oos = do
+    clearRenderWindow wnd black
     mapM_ (\oo -> render (ooState oo)) (elemsIL oos) -- render 'State'!
-    display target
-    newTexture <- getRenderTexture target
-    setTexture target_sprite newTexture False
-    draw wnd target_sprite Nothing
     display wnd
     return $ null $ keysIL oos
   where
     render :: State -> IO ()
     render (Entity pos (RenderableSprite sprite) rotation color) = do
-        setPosition sprite (yampaToSfVectorRounded pos)
-
-        let quantizeRotation r = ((360/steps)*).fromIntegral.round$r/(360/steps)
-            steps = 24
-        setRotation sprite (quantizeRotation rotation)
-
+        setPosition sprite (yampaToSfVector pos)
+        setRotation sprite rotation
         setColor sprite color
-        draw target sprite Nothing
+        draw wnd sprite Nothing
         return ()
     render (Entity pos (RenderableText text string) rotation color) = do
-        setPosition text (yampaToSfVectorRounded pos)
+        setPosition text (yampaToSfVector pos)
         setRotation text rotation
         setTextString text string
         setTextColor text color
-        draw target text Nothing
+        draw wnd text Nothing
         return ()
 
 -- reactimate process ----------
@@ -318,7 +305,7 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
 
     smokeEngine <- ((*0.5).(`subtract`1).fromIntegral.round) ^<< noiseR (0 :: Float, 2) gen -< ()
     smokeOffset <- noiseR ((-0.1), 0.1) gen -< ()
-    let smokePosition = p ^+^ (17 *^ (radToVec (rot+pi+smokeOffset+smokeEngine)))
+    let smokePosition = p ^+^ (50 *^ (radToVec (rot+pi+smokeOffset+smokeEngine)))
 
     returnA -< defaultObjOutput {
         ooState = Entity
@@ -328,13 +315,13 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
                     color,
         ooSpawnRequests = catEvents $ [
             createBulletEvent `tag`
-                particleObject bullet_spr p (proj_v pos_vel rot 400),
+                particleObject bullet_spr p (proj_v pos_vel rot 1000),
             createSmokeEvent `tag`
-                particleObject smoke_spr smokePosition (negateVector (proj_v pos_vel rot 40))
+                particleObject smoke_spr smokePosition (negateVector (proj_v pos_vel rot 100))
                                       ]
         }
-        where pos_speed = 200
-              pos_drag = 0.2
+        where pos_speed = 500
+              pos_drag = 0.5
               rot_speed = 50
               rot_drag = 10
               smoke_particles = 160
