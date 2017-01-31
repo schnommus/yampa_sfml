@@ -319,6 +319,7 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
     smokeEngine <- ((*0.5).(`subtract`1).fromIntegral.round) ^<< noiseR (0 :: Float, 2) gen -< ()
     smokeOffset <- noiseR ((-0.1), 0.1) gen -< ()
     let smokePosition = p ^+^ (17 *^ (radToVec (rot+pi+smokeOffset+smokeEngine)))
+    smokeRedness <- noiseR (0, 255) gen -< ()
 
     returnA -< defaultObjOutput {
         ooState = Entity
@@ -328,9 +329,13 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
                     color,
         ooSpawnRequests = catEvents $ [
             createBulletEvent `tag`
-                particleObject bullet_spr p (proj_v pos_vel rot 400),
+                particleObject bullet_spr p (proj_v pos_vel rot 400) white,
             createSmokeEvent `tag`
-                particleObject smoke_spr smokePosition (negateVector (proj_v pos_vel rot 40))
+                particleObject
+                    smoke_spr
+                    smokePosition
+                    (negateVector (proj_v pos_vel rot 40))
+                    (Color 255 (fromIntegral (smokeRedness :: Int)) 0 255)
                                       ]
         }
         where pos_speed = 200
@@ -341,8 +346,8 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
               proj_v :: Velocity2 -> Double -> Double -> Velocity2
               proj_v vel rot factor = vel ^+^ (factor*^(radToVec rot))
 
-particleObject :: Sprite -> Position2 -> Velocity2 -> Object
-particleObject sprite pos vel = proc objEvents -> do
+particleObject :: Sprite -> Position2 -> Velocity2 -> Color -> Object
+particleObject sprite pos vel color = proc objEvents -> do
     pos_vel <- constant vel -< ()
     pos_out <- (pos^+^) ^<< integral -< pos_vel
     decay <- (+1.0) ^<< integral -< (-1.0)
@@ -350,7 +355,7 @@ particleObject sprite pos vel = proc objEvents -> do
     decayed_event <- edge <<^ (< 0.1) -< decay
 
     let fade :: Double -> Color
-        fade a = Color 255 255 30 ((round.(*255)) a)
+        fade v = color { a = ((round.(*255)) v) }
 
     returnA -< defaultObjOutput {
         ooState = Entity pos_out (RenderableSprite sprite) 0 (fade decay),
