@@ -104,8 +104,14 @@ fpsObj = do
     setTextCharacterSize text 8
     return $ fpsObject (vector2 4 4) text white
 
-init_window :: IO (RenderWindow, RenderTexture, Sprite)
-init_window = do
+data RenderSystem = RenderSystem
+    { renderWindow :: RenderWindow
+    , renderTexture :: RenderTexture
+    , renderSprite :: Sprite
+    }
+
+init_rendersystem :: IO RenderSystem
+init_rendersystem = do
     let ctxSettings = Just $ ContextSettings 24 8 0 1 2 [ContextDefault]
     wnd <-
         createRenderWindow
@@ -120,25 +126,25 @@ init_window = do
         vx (Vec2u x _) = fromIntegral x `div` 3
         vy (Vec2u _ y) = fromIntegral y `div` 3
 
-    renderTarget <- err $
+    renderTex <- err $
         createRenderTexture (vx windowSize) (vy windowSize) False
 
-    spriteTarget <- err $ createSprite
-    setScale spriteTarget 3
+    renderSpr <- err $ createSprite
+    setScale renderSpr 3
 
-    return (wnd, renderTarget, spriteTarget)
+    return $ RenderSystem wnd renderTex renderSpr
 
 main :: IO ()
 main = do
-    (wnd, target, target_sprite) <- init_window
+    renderSystem <- init_rendersystem
 
     clock <- createClock
     player <- playerObj
     fps <- fpsObj
 
-    reactimate (initialize wnd)
-               (input wnd clock)
-               (output wnd target target_sprite)
+    reactimate (initialize $ renderWindow renderSystem)
+               (input (renderWindow renderSystem) clock)
+               (output renderSystem)
                (process (listToIL[player, fps]))
 
 
@@ -165,17 +171,19 @@ yampaToSfVectorRounded :: Vector2 Double -> Vec2f
 yampaToSfVectorRounded v = Vec2f (f$vector2X v) (f$vector2Y v)
     where f = fromIntegral.round
 
-output :: RenderWindow -> RenderTexture -> Sprite -> Bool -> IL ObjOutput -> IO Bool
-output wnd target target_sprite _ oos = do
+output :: RenderSystem -> Bool -> IL ObjOutput -> IO Bool
+output renderSystem _ oos = do
     clear target black
     mapM_ (\oo -> render (ooState oo)) (elemsIL oos) -- render 'State'!
     display target
     newTexture <- getRenderTexture target
-    setTexture target_sprite newTexture False
-    draw wnd target_sprite Nothing
-    display wnd
+    setTexture (renderSprite renderSystem) newTexture False
+    draw (renderWindow renderSystem) (renderSprite renderSystem) Nothing
+    display (renderWindow renderSystem)
     return $ null $ keysIL oos
   where
+    target :: RenderTexture
+    target = renderTexture renderSystem
     render :: State -> IO ()
     render (Entity pos (RenderableSprite sprite) rotation color) = do
         setPosition sprite (yampaToSfVectorRounded pos)
