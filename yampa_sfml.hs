@@ -297,21 +297,38 @@ radToDeg f = 180*(f/3.14159)
 radToVec :: Double -> Velocity2
 radToVec r = vector2 (cos r) (sin r)
 
+rotationToVelocity :: Velocity2 -> Double -> Double -> Velocity2
+rotationToVelocity velocity_base rotation velocity_normal =
+    velocity_base ^+^ (velocity_normal*^(radToVec rotation))
+
 playerObject :: RandomGen r =>
     Position2 -> Sprite -> Sprite -> Color -> Sprite -> Sprite -> r -> Object
-playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc objEvents -> do
+playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen =
+
+    let pos_speed = 200
+        pos_drag = 0.2
+        rot_speed = 50
+        rot_drag = 10
+        smoke_particles = 160
+
+    in proc objEvents -> do
+
+    -- Assign numerical values to each key used to control the player
     left  <- applyValue (-1) 0 <<< trackKey KeyLeft  -< (oeInput objEvents)
     right <- applyValue  1   0 <<< trackKey KeyRight -< (oeInput objEvents)
     up    <- applyValue  1   0 <<< trackKey KeyUp    -< (oeInput objEvents)
 
+    -- If the 'up key' is pressed, the engines are firing (boolean signal)
     engines_on <- trackKey KeyUp -< (oeInput objEvents)
 
+    -- Change the sprite to the 'moving' sprite if the engines are firing
     sprite <- applyValue sprite_move sprite_still -< engines_on
 
+    -- Set up a smoke spawning event source
     smokeSource <- occasionally gen (1/smoke_particles) () -< ()
     let createSmokeEvent = gate smokeSource engines_on
 
-
+    -- Movement and rotation rules
     rec
         rot_acc <- identity -< (rot_speed *) $ (left + right)
         pos_acc <- identity -<  ((up * pos_speed) *^) (radToVec rot)
@@ -322,13 +339,16 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
         rot <- integral -< rot_vel
         p <- (p0^+^) ^<< integral -< pos_vel
 
+    -- Create a bullet when space is pressed
     createBulletEvent <- edge <<< trackKey KeySpace -< (oeInput objEvents)
 
+    -- Create various random parameters used for smoke instantiation
     smokeEngine <- ((*0.5).(`subtract`1).fromIntegral.round) ^<< noiseR (0 :: Float, 2) gen -< ()
     smokeOffset <- noiseR ((-0.1), 0.1) gen -< ()
     let smokePosition = p ^+^ (17 *^ (radToVec (rot+pi+smokeOffset+smokeEngine)))
     smokeRedness <- noiseR (0, 255) gen -< ()
 
+    -- Return the new object state, spawn smoke & bullets etc
     returnA -< defaultObjOutput {
         ooState = Entity
                     p
@@ -337,30 +357,29 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen = proc o
                     color,
         ooSpawnRequests = catEvents $ [
             createBulletEvent `tag`
-                particleObject bullet_spr p (proj_v pos_vel rot 400) white,
+                particleObject
+                    bullet_spr
+                    p
+                    (rotationToVelocity pos_vel rot 400)
+                    white
+                    5,
             createSmokeEvent `tag`
                 particleObject
                     smoke_spr
                     smokePosition
-                    (negateVector (proj_v pos_vel rot 40))
+                    (negateVector (rotationToVelocity pos_vel rot 40))
                     (Color 255 (fromIntegral (smokeRedness :: Int)) 0 255)
+                    0.5
                                       ]
         }
-        where pos_speed = 200
-              pos_drag = 0.2
-              rot_speed = 50
-              rot_drag = 10
-              smoke_particles = 160
-              proj_v :: Velocity2 -> Double -> Double -> Velocity2
-              proj_v vel rot factor = vel ^+^ (factor*^(radToVec rot))
 
-particleObject :: Sprite -> Position2 -> Velocity2 -> Color -> Object
-particleObject sprite pos vel color = proc objEvents -> do
+particleObject :: Sprite -> Position2 -> Velocity2 -> Color -> Double -> Object
+particleObject sprite pos vel color fade_time = proc objEvents -> do
     pos_vel <- constant vel -< ()
     pos_out <- (pos^+^) ^<< integral -< pos_vel
-    decay <- (+1.0) ^<< integral -< (-1.0)
+    decay <- (+1.0) ^<< integral -< (-1/fade_time)
 
-    decayed_event <- edge <<^ (< 0.1) -< decay
+    decayed_event <- edge <<^ (< 0.3) -< decay
 
     let fade :: Double -> Color
         fade v = color { a = ((round.(*255)) v) }
