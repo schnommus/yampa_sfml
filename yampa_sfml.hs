@@ -26,6 +26,7 @@ import SFML.System
 type Position2 = Vector2 Double
 type Velocity2 = Vector2 Double
 type Rotation = Float
+type UIEntity = Bool
 
 type Input = [SFEvent]    -- non-deterministic events from input devices
 type Logic = Yampa.Event () -- deterministic events from object processor
@@ -37,14 +38,8 @@ data ObjEvents = ObjEvents
 
 data Renderable = RenderableSprite Sprite | RenderableText Text String
 
-data State = Entity Position2 Renderable Rotation Color |
+data State = Entity Position2 Renderable Rotation Color UIEntity |
              Camera Position2
-
-instance Show State where
-    show (Entity pos _ rotation color)
-      = "Entity " ++ (show pos) ++ " " ++ (show rotation) ++ " " ++ (show color)
-    show (Camera pos)
-      = "Camera " ++ (show pos)
 
 data ObjOutput = ObjOutput
     { ooState         :: State
@@ -187,8 +182,19 @@ output renderSystem _ oos = do
   where
     target :: RenderTexture
     target = renderTexture renderSystem
+
+    do_draw ::  SFDrawable a => a -> RenderTexture -> UIEntity -> IO ()
+    do_draw drawable target False = do
+        draw target drawable Nothing
+    do_draw drawable target True = do
+        realView <- getView target
+        uiView <- getDefaultView target
+        setView target uiView
+        draw target drawable Nothing
+        setView target realView
+
     render :: State -> IO ()
-    render (Entity pos (RenderableSprite sprite) rotation color) = do
+    render (Entity pos (RenderableSprite sprite) rotation color is_ui) = do
         setPosition sprite (yampaToSfVectorRounded pos)
 
         let quantizeRotation r = ((360/steps)*).fromIntegral.round$r/(360/steps)
@@ -196,15 +202,14 @@ output renderSystem _ oos = do
         setRotation sprite (quantizeRotation rotation)
 
         setColor sprite color
-        draw target sprite Nothing
-        return ()
-    render (Entity pos (RenderableText text string) rotation color) = do
+
+        do_draw sprite target is_ui
+    render (Entity pos (RenderableText text string) rotation color is_ui) = do
         setPosition text (yampaToSfVectorRounded pos)
         setRotation text rotation
         setTextString text string
         setTextColor text color
-        draw target text Nothing
-        return ()
+        do_draw text target is_ui
     render (Camera pos) = do
         currentView <- getView target
         setViewCenter currentView $ (\(Vec2f x y) ->
@@ -251,7 +256,7 @@ hits kooss = concat (hitsAux kooss)
         ++ hitsAux kooss
 
     hit :: State -> State -> Bool
-    (Entity p1 _ _ _) `hit` (Entity p2 _ _ _) = p1 == p2
+    (Entity p1 _ _ _ _) `hit` (Entity p2 _ _ _ _) = p1 == p2
 
 killAndSpawn :: ((Input, IL ObjOutput), IL ObjOutput)
              -> Yampa.Event (IL Object -> IL Object)
@@ -363,7 +368,8 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen =
                     p
                     (RenderableSprite sprite)
                     ((90+).radToDeg.double2Float$rot)
-                    color,
+                    color
+                    False,
         ooSpawnRequests = catEvents $ [
             createBulletEvent `tag`
                 particleObject
@@ -394,7 +400,7 @@ particleObject sprite pos vel color fade_time = proc objEvents -> do
         fade v = color { a = ((round.(*255)) v) }
 
     returnA -< defaultObjOutput {
-        ooState = Entity pos_out (RenderableSprite sprite) 0 (fade decay),
+        ooState = Entity pos_out (RenderableSprite sprite) 0 (fade decay) False,
         ooKillRequest = decayed_event
                                 }
 
@@ -405,7 +411,7 @@ fpsObject pos text color = proc objEvents -> do
         oldElapsed <- iPre 0.1 -< elapsed
         fps <- arr ((++" FPS").show.round.(1.0/)) -< elapsed - oldElapsed
     returnA -< defaultObjOutput {
-        ooState = Entity pos (RenderableText text fps) 0 color
+        ooState = Entity pos (RenderableText text fps) 0 color True
                                 }
 
 cameraObject :: Vector2 Double -> Object
