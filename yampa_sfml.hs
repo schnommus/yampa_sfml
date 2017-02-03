@@ -37,16 +37,14 @@ data ObjEvents = ObjEvents
 
 data Renderable = RenderableSprite Sprite | RenderableText Text String
 
-data State = Entity
-    { entPosition :: Position2
-    , entRenderable  :: Renderable
-    , entRotation :: Rotation
-    , entColor    :: Color
-    }
+data State = Entity Position2 Renderable Rotation Color |
+             Camera Position2
 
 instance Show State where
     show (Entity pos _ rotation color)
-      = "Entity" ++ (show pos) ++ " " ++ (show rotation) ++ " " ++ (show color)
+      = "Entity " ++ (show pos) ++ " " ++ (show rotation) ++ " " ++ (show color)
+    show (Camera pos)
+      = "Camera " ++ (show pos)
 
 data ObjOutput = ObjOutput
     { ooState         :: State
@@ -104,6 +102,10 @@ fpsObj = do
     setTextCharacterSize text 8
     return $ fpsObject (vector2 4 4) text white
 
+cameraObj :: IO Object
+cameraObj = do
+    return $ cameraObject (vector2 0 0)
+
 data RenderSystem = RenderSystem
     { renderWindow :: RenderWindow
     , renderTexture :: RenderTexture
@@ -141,11 +143,12 @@ main = do
     clock <- createClock
     player <- playerObj
     fps <- fpsObj
+    camera <- cameraObj
 
     reactimate (initialize $ renderWindow renderSystem)
                (input (renderWindow renderSystem) clock)
                (output renderSystem)
-               (process (listToIL[player, fps]))
+               (process (listToIL[player, fps, camera]))
 
 
 -- reactimation IO ----------
@@ -201,6 +204,12 @@ output renderSystem _ oos = do
         setTextString text string
         setTextColor text color
         draw target text Nothing
+        return ()
+    render (Camera pos) = do
+        currentView <- getView target
+        setViewCenter currentView $ (\(Vec2f x y) ->
+            Vec2f (x) (y+0.5)) (yampaToSfVectorRounded pos)
+        setView target currentView
         return ()
 
 -- reactimate process ----------
@@ -398,3 +407,21 @@ fpsObject pos text color = proc objEvents -> do
     returnA -< defaultObjOutput {
         ooState = Entity pos (RenderableText text fps) 0 color
                                 }
+
+cameraObject :: Vector2 Double -> Object
+cameraObject p0 = proc objEvents -> do
+
+    left  <- applyValue (-1) 0 <<< trackKey KeyA -< (oeInput objEvents)
+    right <- applyValue  1   0 <<< trackKey KeyD -< (oeInput objEvents)
+    up    <- applyValue (-1) 0 <<< trackKey KeyW -< (oeInput objEvents)
+    down  <- applyValue   1  0 <<< trackKey KeyS -< (oeInput objEvents)
+
+    let pos_speed = 800
+        pos_drag = 5
+
+    rec
+        pos_acc <- identity -<  (pos_speed *^) $ vector2 (left + right) (up + down)
+        pos_vel <- integral -< pos_acc ^-^ (pos_drag *^ pos_vel)
+        p <- (p0^+^) ^<< integral -< pos_vel
+
+    returnA -< defaultObjOutput { ooState = Camera p }
