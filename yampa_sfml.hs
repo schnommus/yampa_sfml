@@ -41,14 +41,20 @@ data Renderable = RenderableSprite Sprite | RenderableText Text String
 data State = Entity Position2 Renderable Rotation Color UIEntity |
              Camera Position2
 
+instance Show State where
+    show (Entity _ _ _ _ _) = "Entity"
+    show (Camera _) = "Camera"
+
 data ObjOutput = ObjOutput
-    { ooState         :: State
+    { ooLayer         :: Double
+    , ooState         :: State
     , ooKillRequest   :: Yampa.Event ()       -- NoEvent|Event ()
     , ooSpawnRequests :: Yampa.Event [Object]
-    }
+    } deriving (Show)
 
 defaultObjOutput = ObjOutput
-    { ooState         = undefined
+    { ooLayer         = 0
+    , ooState         = undefined
     , ooKillRequest   = Yampa.NoEvent
     , ooSpawnRequests = Yampa.NoEvent
     }
@@ -169,32 +175,61 @@ yampaToSfVectorRounded :: Vector2 Double -> Vec2f
 yampaToSfVectorRounded v = Vec2f (f$vector2X v) (f$vector2Y v)
     where f = fromIntegral.round
 
+data RenderableViews = RenderableViews { renderableuiView :: View
+                                       , renderablerealView :: View }
+
+is_camera :: ObjOutput -> Bool
+is_camera c = case (ooState c) of
+    (Camera _) -> True
+    _ -> False
+
 output :: RenderSystem -> Bool -> IL ObjOutput -> IO Bool
 output renderSystem _ oos = do
     clear target black
-    mapM_ (\oo -> render (ooState oo)) (elemsIL oos) -- render 'State'!
+
+    -- Camera logic
+    realView <- getView target >>= copyView
+    uiView <- getDefaultView target
+    mapM_ (\oo -> apply_camera realView (ooState oo)) $
+        filter is_camera (elemsIL oos)
+
+    -- Render everything
+    let ordered states = sortBy (\a b -> ooLayer a `compare` ooLayer b) states
+    let views = RenderableViews realView uiView
+    mapM_ (\oo -> render views (ooState oo)) (ordered$elemsIL oos)
+
+    -- Swap buffers and render the scaled texture
     display target
     newTexture <- getRenderTexture target
     setTexture (renderSprite renderSystem) newTexture False
     draw (renderWindow renderSystem) (renderSprite renderSystem) Nothing
     display (renderWindow renderSystem)
+
+    -- Destroy the view we copied
+    destroy realView
+
     return $ null $ keysIL oos
   where
     target :: RenderTexture
     target = renderTexture renderSystem
 
-    do_draw ::  SFDrawable a => a -> RenderTexture -> UIEntity -> IO ()
-    do_draw drawable target False = do
+    apply_camera :: View -> State -> IO ()
+    apply_camera realView (Camera pos) =
+        setViewCenter realView $ (\(Vec2f x y) ->
+            Vec2f (x) (y+0.5)) (yampaToSfVectorRounded pos)
+
+
+    do_draw ::  SFDrawable a =>
+        RenderableViews -> a -> RenderTexture -> UIEntity -> IO ()
+    do_draw (RenderableViews realView _) drawable target False = do
+        setView target realView
         draw target drawable Nothing
-    do_draw drawable target True = do
-        realView <- getView target
-        uiView <- getDefaultView target
+    do_draw (RenderableViews _ uiView) drawable target True = do
         setView target uiView
         draw target drawable Nothing
-        setView target realView
 
-    render :: State -> IO ()
-    render (Entity pos (RenderableSprite sprite) rotation color is_ui) = do
+    render :: RenderableViews -> State -> IO ()
+    render views (Entity pos (RenderableSprite sprite) rotation color is_ui) = do
         setPosition sprite (yampaToSfVectorRounded pos)
 
         let quantizeRotation r = ((360/steps)*).fromIntegral.round$r/(360/steps)
@@ -203,18 +238,14 @@ output renderSystem _ oos = do
 
         setColor sprite color
 
-        do_draw sprite target is_ui
-    render (Entity pos (RenderableText text string) rotation color is_ui) = do
+        do_draw views sprite target is_ui
+    render views (Entity pos (RenderableText text string) rotation color is_ui) = do
         setPosition text (yampaToSfVectorRounded pos)
         setRotation text rotation
         setTextString text string
         setTextColor text color
-        do_draw text target is_ui
-    render (Camera pos) = do
-        currentView <- getView target
-        setViewCenter currentView $ (\(Vec2f x y) ->
-            Vec2f (x) (y+0.5)) (yampaToSfVectorRounded pos)
-        setView target currentView
+        do_draw views text target is_ui
+    render views (Camera pos) = do
         return ()
 
 -- reactimate process ----------
@@ -430,4 +461,4 @@ cameraObject p0 = proc objEvents -> do
         pos_vel <- integral -< pos_acc ^-^ (pos_drag *^ pos_vel)
         p <- (p0^+^) ^<< integral -< pos_vel
 
-    returnA -< defaultObjOutput { ooState = Camera p }
+    returnA -< defaultObjOutput { ooLayer = -1000, ooState = Camera p }
