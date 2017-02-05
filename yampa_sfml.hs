@@ -9,6 +9,7 @@ import IdentityList
 import Data.Maybe
 import Data.List.Safe as ListSafe
 import Control.Monad.Loops
+import Control.Applicative
 import System.Random
 
 import GHC.Float
@@ -53,7 +54,7 @@ data ObjOutput = ObjOutput
     } deriving (Show)
 
 defaultObjOutput = ObjOutput
-    { ooLayer         = 0
+    { ooLayer         = 1.0
     , ooState         = undefined
     , ooKillRequest   = Yampa.NoEvent
     , ooSpawnRequests = Yampa.NoEvent
@@ -103,6 +104,20 @@ fpsObj = do
     setTextCharacterSize text 8
     return $ fpsObject (vector2 4 4) text white
 
+starObjs :: IO [Object]
+starObjs = do
+    star_spr <- loadPixelSprite "media/pixelstar.png" (IntRect 0 0 1 1)
+
+    let num_stars = 100
+        width = 500
+
+        random_vector = liftA2 vector2 (randomRIO (-width, width)) (randomRIO (-width, width))
+        random_layer = randomRIO (1.5, 3)
+        star_init = liftA2 (,) random_vector random_layer
+        create_star (pos,layer) = particleObject star_spr pos (vector2 0 0) white 1e9 layer
+
+    sequenceA $ fmap ($star_init) (replicate num_stars (liftA create_star))
+
 cameraObj :: IO Object
 cameraObj = do
     return $ cameraObject (vector2 0 0)
@@ -145,11 +160,14 @@ main = do
     player <- playerObj
     fps <- fpsObj
     camera <- cameraObj
+    stars <- starObjs
+
+    let ents = [player, fps, camera] ++ stars
 
     reactimate (initialize $ renderWindow renderSystem)
                (input (renderWindow renderSystem) clock)
                (output renderSystem)
-               (process (listToIL[player, fps, camera]))
+               (process (listToIL ents))
 
 
 -- reactimation IO ----------
@@ -171,17 +189,10 @@ input wnd clk _ = do
     delta <- fmap (float2Double.asSeconds) (restartClock clk)
     return (delta, Just events)
 
-yampaToSfVectorRounded :: Vector2 Double -> Vec2f
-yampaToSfVectorRounded v = Vec2f (f$vector2X v) (f$vector2Y v)
-    where f = fromIntegral.round
 
 data RenderableViews = RenderableViews { renderableuiView :: View
-                                       , renderablerealView :: View }
-
-is_camera :: ObjOutput -> Bool
-is_camera c = case (ooState c) of
-    (Camera _) -> True
-    _ -> False
+                                       , renderablerealView :: View
+                                       , renderablerealViewPos :: Position2}
 
 output :: RenderSystem -> Bool -> IL ObjOutput -> IO Bool
 output renderSystem _ oos = do
@@ -190,13 +201,19 @@ output renderSystem _ oos = do
     -- Camera logic
     realView <- getView target >>= copyView
     uiView <- getDefaultView target
-    mapM_ (\oo -> apply_camera realView (ooState oo)) $
-        filter is_camera (elemsIL oos)
+
+    let process_camera c = case (ooState c) of
+            (Camera pos) -> Just pos
+            _ -> Nothing
+        real_camera_pos = Prelude.head $ catMaybes $ map process_camera (elemsIL oos)
+
+    setViewCenter realView $ (\(Vec2f x y) ->
+        Vec2f (x) (y+0.5)) (yampaToSfVectorRounded real_camera_pos)
 
     -- Render everything
-    let ordered states = sortBy (\a b -> ooLayer a `compare` ooLayer b) states
-    let views = RenderableViews realView uiView
-    mapM_ (\oo -> render views (ooState oo)) (ordered$elemsIL oos)
+    let ordered states = sortBy (\a b -> ooLayer b `compare` ooLayer a) states
+    let views = RenderableViews realView uiView real_camera_pos
+    mapM_ (\oo -> render views (ooState oo) (ooLayer oo)) (ordered$elemsIL oos)
 
     -- Swap buffers and render the scaled texture
     display target
@@ -213,39 +230,44 @@ output renderSystem _ oos = do
     target :: RenderTexture
     target = renderTexture renderSystem
 
-    apply_camera :: View -> State -> IO ()
-    apply_camera realView (Camera pos) =
-        setViewCenter realView $ (\(Vec2f x y) ->
-            Vec2f (x) (y+0.5)) (yampaToSfVectorRounded pos)
+    yampaToSfVectorRounded :: Vector2 Double -> Vec2f
+    yampaToSfVectorRounded v = Vec2f (f$vector2X v) (f$vector2Y v)
+        where f = fromIntegral.round
 
+    sfVectorToYampa :: Vec2f -> Vector2 Double
+    sfVectorToYampa (Vec2f x y) = vector2 (float2Double x) (float2Double y)
 
-    do_draw ::  SFDrawable a =>
-        RenderableViews -> a -> RenderTexture -> UIEntity -> IO ()
-    do_draw (RenderableViews realView _) drawable target False = do
+    layerScale :: Vector2 Double -> Double -> Vector2 Double
+    layerScale pos_in layer = vector2 ((vector2X pos_in)/layer) ((vector2Y pos_in)/layer)
+
+    do_draw ::  (SFDrawable a, SFTransformable a) =>
+        RenderableViews -> a -> RenderTexture -> Position2 -> Double -> UIEntity -> IO ()
+    do_draw (RenderableViews realView _ view_pos) drawable target pos layer False = do
+        setPosition drawable (yampaToSfVectorRounded $
+            (layerScale (pos ^-^ view_pos) layer))
         setView target realView
         draw target drawable Nothing
-    do_draw (RenderableViews _ uiView) drawable target True = do
+    do_draw (RenderableViews _ uiView _) drawable target pos layer True = do
+        setPosition drawable (yampaToSfVectorRounded $ pos)
         setView target uiView
         draw target drawable Nothing
 
-    render :: RenderableViews -> State -> IO ()
-    render views (Entity pos (RenderableSprite sprite) rotation color is_ui) = do
-        setPosition sprite (yampaToSfVectorRounded pos)
-
+    render :: RenderableViews -> State -> Double -> IO ()
+    render views (Entity pos (RenderableSprite sprite) rotation color is_ui) layer = do
         let quantizeRotation r = ((360/steps)*).fromIntegral.round$r/(360/steps)
             steps = 24
+
         setRotation sprite (quantizeRotation rotation)
 
         setColor sprite color
 
-        do_draw views sprite target is_ui
-    render views (Entity pos (RenderableText text string) rotation color is_ui) = do
-        setPosition text (yampaToSfVectorRounded pos)
+        do_draw views sprite target pos layer is_ui
+    render views (Entity pos (RenderableText text string) rotation color is_ui) layer = do
         setRotation text rotation
         setTextString text string
         setTextColor text color
-        do_draw views text target is_ui
-    render views (Camera pos) = do
+        do_draw views text target pos layer is_ui
+    render views (Camera pos) layer = do
         return ()
 
 -- reactimate process ----------
@@ -408,7 +430,8 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen =
                     p
                     (rotationToVelocity pos_vel rot 400)
                     white
-                    5,
+                    5
+                    1.0,
             createSmokeEvent `tag`
                 particleObject
                     smoke_spr
@@ -416,11 +439,12 @@ playerObject p0 sprite_still sprite_move color bullet_spr smoke_spr gen =
                     (negateVector (rotationToVelocity pos_vel rot 40))
                     (Color 255 (fromIntegral (smokeRedness :: Int)) 0 255)
                     0.5
+                    1.0
                                       ]
         }
 
-particleObject :: Sprite -> Position2 -> Velocity2 -> Color -> Double -> Object
-particleObject sprite pos vel color fade_time = proc objEvents -> do
+particleObject :: Sprite -> Position2 -> Velocity2 -> Color -> Double -> Double -> Object
+particleObject sprite pos vel color fade_time layer = proc objEvents -> do
     pos_vel <- constant vel -< ()
     pos_out <- (pos^+^) ^<< integral -< pos_vel
     decay <- (+1.0) ^<< integral -< (-1/fade_time)
@@ -431,6 +455,7 @@ particleObject sprite pos vel color fade_time = proc objEvents -> do
         fade v = color { a = ((round.(*255)) v) }
 
     returnA -< defaultObjOutput {
+        ooLayer = layer,
         ooState = Entity pos_out (RenderableSprite sprite) 0 (fade decay) False,
         ooKillRequest = decayed_event
                                 }
